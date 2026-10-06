@@ -1,0 +1,29 @@
+#!/sbin/sh
+#################
+# Magisk module installer entry point. Everything beyond locating
+# util_functions.sh is handled by the root manager itself (Magisk 20.4+,
+# KernelSU and APatch all provide install_module).
+#################
+umask 022
+OUTFD=$2
+ZIPFILE=$3
+
+mount /data 2>/dev/null
+
+if [ ! -f /data/adb/magisk/util_functions.sh ]; then
+  echo "*********************************"
+  echo " Please install Magisk v20.4+,   "
+  echo " KernelSU or APatch.             "
+  echo "*********************************"
+  exit 1
+fi
+
+. /data/adb/magisk/util_functions.sh
+
+if [ "$MAGISK_VER_CODE" -lt 20400 ]; then
+  echo "! Please upgrade to Magisk v20.4 or newer."
+  exit 1
+fi
+
+install_module
+exit 0

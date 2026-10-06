@@ -1,0 +1,7 @@
+id=TrustMeDarling
+name=Trust Me Darling!
+version=v2.0
+versionCode=2000
+author=TheKimi7
+description=Makes user-installed CA certificates part of the system trust store, and tells you which apps will not see them.
+updateJson=https://raw.githubusercontent.com/TheKimi7/TrustMeDarling/main/update.json
