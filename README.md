@@ -2,135 +2,129 @@
 
 # TrustMeDarling!
 
-**Your CA certificate, trusted system-wide — and a straight answer when it isn't.**
+**Your CA certificate, trusted system-wide, and a straight answer when it isn't.**
 
 [![Version](https://img.shields.io/badge/version-v2.1-blue)](https://github.com/TheKimi7/TrustMeDarling/releases/latest)
-[![Android](https://img.shields.io/badge/Android-11%20%E2%80%93%2015-green)](#compatibility)
+[![Android](https://img.shields.io/badge/Android-11%20%E2%80%93%2015-green)](#android-11-and-newer-on-any-architecture)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-orange)](LICENSE)
 
 </div>
 
 ---
 
-## What it does
+## User certificates become system certificates
 
-Install a CA certificate the normal way — Settings, "user" certificate — and this
-module makes it part of the **system** trust store. Apps that only trust system
-CAs stop refusing your proxy.
+Install a CA the normal way, through Settings, and this module copies it into the
+**system** trust store at boot. Apps that trust only system CAs then accept your
+proxy.
 
-That part is table stakes. The reason this module exists is the other half.
+On Android 11 to 13 the store is `/system/etc/security/cacerts`. From Android 14
+it moved inside the read-only Conscrypt APEX, so the module mounts a merged store
+over it after boot instead. Which one is live is detected at runtime rather than
+assumed, so an unknown or preview release fails visibly instead of silently.
 
-## When your certificate doesn't show up
+## Root-hiding removes the certificate from the apps it hides
 
-If you hide root with **Shamiko**, **Magisk's DenyList**, or **KernelSU's
-umount**, those tools undo module mounts inside the apps they hide. Your
-certificate is in the system trust store — everywhere except the app you're
-trying to intercept.
+Shamiko, Magisk's DenyList and KernelSU's umount all revert module mounts inside
+the apps they hide. Your certificate sits in the system trust store everywhere
+except the one app you are trying to intercept. Nothing logs this and no error
+appears, so the proxy looks broken when it is fine.
 
-Nothing warns you. No log, no error. The certificate is simply absent, and you
-spend an evening debugging a proxy that was fine all along.
-
-**This module tells you instead:**
-
-```
-Hiding: Shamiko in blacklist mode, 9 package(s) listed.
-  These apps will NOT see the certificates:
-    com.android.chrome
-    com.android.vending
-    com.google.android.gms
-    ...
-  Untick only the apps you are actually intercepting. Leave
-  gms/vending listed if you rely on Play Integrity.
-```
-
-It also checks every running app directly, by looking from inside each app's own
-mount namespace rather than guessing from config:
+The module checks each running app from inside that app's own mount namespace, so
+it reports what is true rather than what should be true.
 
 ```
-Per-app check - certificate visibility, running apps only:
-  24 app(s) can see the certificates
-  7 app(s) can NOT:
-    com.google.android.gms
-    com.android.vending
-    ...
+TrustMeDarling!
+  android     : 35 (REL)
+  manager     : Magisk 30700
+  trust store : /apex/com.android.conscrypt/cacerts
+
+Certificates added by this module (1):
+  9a5ba575.0
+
+Store: OK - 146 certificates in /apex/com.android.conscrypt/cacerts
+
+Per-app check - trusted, measured per running app:
+  51 app(s) trust the certificates
 ```
 
-## Install
+When apps come up short they are named, and the report points at root-hiding as
+the usual cause.
 
-1. Download the latest zip from [**Releases**](https://github.com/TheKimi7/TrustMeDarling/releases/latest)
-2. Flash it in Magisk (or KernelSU / APatch) and reboot
-3. Add your CA under **Settings → Security → Encryption & credentials → Install a certificate → CA certificate**
-4. **Reboot again** — certificates are picked up at boot
+## Installation needs two reboots
 
-Android requires a screen lock for step 3. Without one, place the certificate at
+1. Download the latest zip from [Releases](https://github.com/TheKimi7/TrustMeDarling/releases/latest).
+2. Flash it in Magisk, KernelSU or APatch, then reboot.
+3. Add your CA under **Settings → Security → Encryption & credentials → Install a certificate → CA certificate**.
+4. Reboot again, because certificates are staged at boot.
+
+Android requires a screen lock before it will install a CA through Settings. If
+you do not use one, put the certificate at
 `/data/misc/user/0/cacerts-added/<subject_hash_old>.0` instead, owned
-`system:system`, mode `644`.
+`system:system` with mode `644`.
 
-## Checking it worked
+## The log says whether the certificates are trusted
 
 ```sh
 su -c 'cat /data/adb/TrustMeDarling/log.txt'
 ```
 
-The module also writes a one-line summary under its own name in your manager's
-module list:
+The module also rewrites its own one-line description in your manager's module
+list, so the state is visible without opening anything.
 
 ```
-Active - 1 cert(s) trusted system-wide.
-Active - 1 cert(s); 9 app(s) hidden.
+Active - 1 cert(s) in the conscrypt APEX store.
+Active - 2 cert(s) in the system store. 1 renamed on collision.
+FAILED - certificates are not trusted. See the log.
 Idle - no user certificates installed.
 ```
 
-For the full per-app report:
+The full per-app report comes from the Action button, or directly:
 
 ```sh
 su -c 'sh /data/adb/modules/TrustMeDarling/action.sh'
 ```
 
-## Not working? Read this first
+## Four things explain almost every failure
 
-**The app you're testing is hidden from root.** Far and away the most common
-cause. Check the log — it names the affected packages. Untick that one app in
-your DenyList and force-stop it.
+**The app you are testing is hidden from root.** This is by far the most common
+cause. Run the per-app report, which names the affected packages. Exempt that one
+app from your DenyList and force-stop it.
 
-**Your proxy's CA changed.** Burp regenerates its CA, and every Burp
-installation issues one with an *identical* subject name. So an old certificate
-and a new one are indistinguishable by filename despite having different keys —
-and the old one will happily sit there validating nothing. Re-export the
-certificate from your proxy and compare fingerprints before assuming anything
-else is wrong.
+**Your proxy's CA changed.** Every Burp installation issues its CA with an
+identical subject name, so an old certificate and a current one share a filename
+despite having different keys. The stale one will sit there validating nothing.
+Re-export from your proxy and compare SHA-256 fingerprints before looking
+anywhere else.
 
-**You didn't reboot.** Certificates are staged at boot. Adding or removing one
-needs a restart.
+**You did not reboot.** Certificates are staged during early boot, so adding or
+removing one takes effect only after a restart.
 
-**The log says `WARNING: ... is a disabled-CA alias`.** You previously disabled a
-system CA that happens to share your certificate's subject hash. Android
-suppresses that slot by name, so re-enable it under Settings → Encryption &
-credentials → Trusted credentials.
+**The log warns about a disabled-CA alias.** You previously disabled a system CA
+whose subject hash matches your certificate. Android suppresses that slot by
+filename whatever the file contains, so re-enable that CA under Settings →
+Encryption & credentials → Trusted credentials.
 
-## Compatibility
+## Android 11 and newer, on any architecture
 
 | | |
 |---|---|
-| **Android** | 11 – 15 (API 30+) |
-| **Root** | Magisk · KernelSU · APatch |
-| **Architecture** | any — pure shell, no compiled code |
+| **Android** | 11 to 15 (API 30+) |
+| **Root** | Magisk, KernelSU, APatch |
+| **Architecture** | any, because it is pure shell with no compiled code |
 
-Verified on hardware with real proxy interception on **Android 13** (`user`
-build), **Android 14** and **Android 15**. Android 14+ uses a different trust store (inside the
-read-only Conscrypt APEX) and the module handles it; which store is live is
-detected at runtime, so preview and future releases degrade to a clear failure
-rather than a silent one.
+Verified on hardware with live proxy interception on Android 13 (a `user` build
+with `ro.debuggable=0`), Android 14 and Android 15. The Android 14 and 15 tests
+ran against a real updatable Conscrypt APEX, and the Android 15 device had Google
+services installed.
 
-## Good to know
+## Behaviour worth knowing before you rely on it
 
-- Adding or removing a certificate takes effect on the next boot.
-- With no certificates installed the module creates nothing and mounts nothing —
-  it is completely inert.
-- Certificates that collide on subject hash are renumbered, never overwritten,
-  so a stale certificate can't shadow a working one.
-- It never touches your `cacerts-added` directory, and never modifies any
-  partition.
+- Adding or removing a certificate takes effect on the next boot, because staging happens during early boot.
+- With no user certificates installed the module creates no files and mounts nothing, so it is inert rather than idle.
+- Certificates whose subject hash collides are renumbered to the next free suffix instead of overwriting, so a stale certificate cannot shadow a working one.
+- Suffixes are allocated contiguously from `.0`, because Android stops scanning a subject hash at the first missing index and a gap would hide every certificate above it.
+- The module never creates your `cacerts-added` directory and never writes to any partition.
 - Set `debug=1` in `/data/adb/TrustMeDarling/config` for a verbose log.
 
 ## Licence

@@ -1,50 +1,52 @@
 # Cutting a release
 
-The manager shows an update prompt by polling the `updateJson` URL in
-`module.prop` and comparing its `versionCode` with the installed one. So a
-release is three things that must agree:
+A release is three things that must agree, because the manager polls the
+`updateJson` URL in `module.prop` and compares its `versionCode` with the
+installed one.
 
-1. `module.prop` — `version` and `versionCode`
-2. `update.json` — the same two, plus a `zipUrl` that really exists
-3. a GitHub release at tag `<version>` with that zip attached
+1. `module.prop`, holding `version` and `versionCode`.
+2. `update.json`, holding the same two plus a `zipUrl` that exists.
+3. A GitHub release tagged `<version>` with that zip attached.
 
-`update.json` is **generated** from `module.prop` by `tools/release.sh`. Never
-hand-edit it; that is how the two numbers drift apart, which is the usual reason
-an update prompt silently fails to appear.
+`tools/release.sh` generates `update.json` from `module.prop`. Never edit it by
+hand, because that is how the two version numbers drift apart, and drift is the
+usual reason an update prompt never appears.
 
-## Steps
-
-**1. Bump the version.** Edit `module.prop` only:
+## Bump the version in module.prop only
 
 ```
 version=v2.1
 versionCode=2100
 ```
 
-`versionCode` must be an integer and must **increase**. The manager compares
-only this number — a prettier `version` string with the same code shows no
-prompt. The convention here is `v2.1` → `2100`.
+`versionCode` must be an integer and must increase. It is the only value the
+manager compares, so a new `version` string with an unchanged code produces no
+prompt. The convention here is `v2.1` for the string and `2100` for the code.
 
-**2. Write the changelog.** Add a section at the top of `CHANGELOG.md`. It is
-served raw to the manager, so keep it readable as plain text.
+## Write the changelog
 
-**3. Commit.** The script refuses to publish from a dirty tree.
+Add a section at the top of `CHANGELOG.md`. The manager fetches it raw, so it
+has to read well as plain text.
+
+## Commit before building
 
 ```sh
 git add -A && git commit -m "v2.1"
 ```
 
-**4. Build and check.**
+The script refuses to publish from a dirty tree.
+
+## Build and check locally
 
 ```sh
 tools/release.sh
 ```
 
-This writes `dist/TrustMeDarling-v2.1.zip`, regenerates `update.json`, and
-verifies the zip contains the installer and the scripts but none of `docs/`,
-`tools/` or `update.json`. Nothing is pushed.
+This writes `dist/TrustMeDarling-v2.1.zip` and regenerates `update.json`. It
+then verifies the zip contains the installer and the scripts, and none of
+`docs/`, `tools/` or `update.json`. Nothing is pushed.
 
-**5. Test the zip before publishing.** The artifact, not the working tree:
+## Test the artifact, not the working tree
 
 ```sh
 adb push dist/TrustMeDarling-v2.1.zip /data/local/tmp/rel.zip
@@ -53,24 +55,29 @@ adb reboot
 # then: adb shell su -c 'cat /data/adb/TrustMeDarling/log.txt'
 ```
 
-**6. Publish.**
+Do not pipe the installer's output through `head` or similar. The early pipe
+close sends SIGPIPE and kills the install part way, which looks like a module
+fault and is not one.
+
+## Publish
 
 ```sh
 git add update.json && git commit -m "update.json for v2.1"
 tools/release.sh --publish
 ```
 
-That tags, pushes, and creates the release with the zip attached. Or do it by
-hand:
+That tags the commit, pushes `main` and the tag, and creates the release with
+the zip attached. The equivalent by hand:
 
 ```sh
 git tag -a v2.1 -m v2.1 && git push origin main --tags
 gh release create v2.1 dist/TrustMeDarling-v2.1.zip --notes-file CHANGELOG.md
 ```
 
-**7. Verify what users will actually fetch.** `update.json` is served from the
-branch, so it must be pushed *after* the release exists, or the first person to
-check gets a 404:
+## Verify what users will fetch
+
+`update.json` is served from the branch, so push it only after the release
+exists. Otherwise the first person to check gets a 404 for the zip.
 
 ```sh
 curl -s https://raw.githubusercontent.com/TheKimi7/TrustMeDarling/main/update.json
@@ -78,16 +85,19 @@ curl -sIL -o /dev/null -w '%{http_code}\n' \
   "$(curl -s https://raw.githubusercontent.com/TheKimi7/TrustMeDarling/main/update.json | sed -n 's/.*"zipUrl": "\([^"]*\)".*/\1/p')"
 ```
 
-Expect the new `versionCode` and `200` for the zip.
+Expect the new `versionCode` and `200` for the zip. Downloading the published
+zip and comparing its SHA-256 against `dist/` confirms the asset is the one you
+built.
 
 ## Notes
 
-- The repository must stay public, or `raw.githubusercontent.com` returns 404
-  and no one is ever offered an update.
-- The prompt is the *manager* fetching your GitHub URL on refresh. It reveals
-  that a device has this module installed, plus an IP, to GitHub. That is
-  standard for Magisk modules, but it is worth knowing for a module whose users
-  often run Shamiko and PIF specifically to avoid such signals. Removing the
-  `updateJson` line disables it entirely and breaks nothing else.
-- `zipUrl` must point at a release **asset**, not a repository archive. A GitHub
-  source tarball has a wrapping directory and will not install.
+- The repository must stay public. If it is private, `raw.githubusercontent.com`
+  returns 404 and nobody is ever offered an update.
+- The update check is the manager fetching your GitHub URL on refresh, which
+  tells GitHub that a device has this module installed, along with an IP. That
+  is normal for Magisk modules. It is worth knowing anyway, because many users
+  of this module run Shamiko and Play Integrity Fix to avoid exactly that kind
+  of signal. Deleting the `updateJson` line disables the check and breaks
+  nothing else.
+- `zipUrl` must point at a release asset rather than a repository archive. A
+  GitHub source tarball has a wrapping directory and will not install.
