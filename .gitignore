@@ -1,2 +1,5 @@
 dist/
 *.zip
+
+# local research notes, not shipped
+docs/device-testing.md

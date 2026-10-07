@@ -5,7 +5,7 @@
 
 SKIPUNZIP=0
 
-ui_print "- TrustMeDarling"
+ui_print "- TrustMeDarling!"
 ui_print "  android sdk : $API"
 ui_print "  architecture: $ARCH"
 
@@ -17,18 +17,8 @@ fi
 
 if [ -d /apex/com.android.conscrypt/cacerts ] && [ "$API" -ge 34 ]; then
     ui_print "  trust store : conscrypt APEX (late injection)"
-    ui_print "! This path is not yet verified on real hardware."
-    ui_print "  Please report results."
 else
     ui_print "  trust store : /system (module mount)"
-fi
-
-if [ -d /data/adb/modules/zygisk_shamiko ] && [ ! -f /data/adb/modules/zygisk_shamiko/disable ]; then
-    ui_print ""
-    ui_print "! Shamiko is installed."
-    ui_print "  Apps on your DenyList will NOT see these certificates."
-    ui_print "  After rebooting, check which ones in"
-    ui_print "  /data/adb/TrustMeDarling/log.txt"
 fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644

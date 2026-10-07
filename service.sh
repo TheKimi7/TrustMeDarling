@@ -1,21 +1,21 @@
 #!/system/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 TheKimi7
-# On API 34+ conscrypt reads the conscrypt APEX, which the module mount cannot
-# reach, so the merged store is mounted over it here - after apexd and zygote.
-# Also reports which apps will not see the certificates.
+#
+# Android 14+ only does any work here. From 14 the trust store lives inside the
+# read-only conscrypt APEX, which the module tree cannot reach, so the merged
+# store is mounted over it after apexd and zygote are up.
 
 MODDIR=${0%/*}
-# ${0%/*} yields "sh" when $0 carries no slash, which happens when a host
-# sources this instead of executing it.
+# $0 is not always a path; fall back so the library always loads.
 [ -f "$MODDIR/tmd.sh" ] || MODDIR=/data/adb/modules/TrustMeDarling
 . "$MODDIR/tmd.sh"
 
 STAGE=/dev/.tmd_store
 
 # Our own tmpfs is a single flat mount, so a plain bind is enough. Binding the
-# module-mounted /system store would need --rbind, since managers mount each
-# cert file individually and a plain bind drops those nested mounts.
+# module-mounted /system store would need --rbind, since a manager can mount
+# each cert file individually and a plain bind drops those nested mounts.
 build_stage() {
     _target=$1
     umount "$STAGE" 2>/dev/null
@@ -44,15 +44,21 @@ bind_in() {
     fi
 }
 
+# The binds keep the tmpfs alive. Dropping the staging path removes a mount
+# entry every process on the device would otherwise inherit.
+release_stage() {
+    umount "$STAGE" 2>/dev/null && rmdir "$STAGE" 2>/dev/null
+}
+
 inject_late() {
     _target=$1
     build_stage "$_target" || return 1
 
     _probe=$(sys_marker)
-    [ -n "$_probe" ] && logd "hidden-namespace probe: $SYS_STORE/$_probe"
+    [ -n "$_probe" ] && logd "namespace probe: $SYS_STORE/$_probe"
 
-    # Where /apex propagates init -> zygote as a slave mount, this covers
-    # everything on its own.
+    # init first. Where /apex propagates init -> zygote as a slave mount, this
+    # covers everything on its own.
     if [ "$force_walk" = 1 ]; then
         log "  force_walk=1: skipping the init bind to exercise the walk"
     elif bind_in 1 "$_target"; then
@@ -81,6 +87,17 @@ inject_late() {
     fi
 
     log "  no propagation to zygote - injecting per namespace"
+
+    # Zygotes first, before enumerating anything. descendants_of walks the
+    # whole process table, which takes tens of seconds on a device with GApps,
+    # and every app forked during that window would otherwise inherit an
+    # unpatched namespace and never be revisited.
+    for _z in $_zygotes; do
+        has_mount_at "$_z" "$_target" && continue
+        bind_in "$_z" "$_target" && log "  zygote $_z bound first" ||
+            logd "zygote $_z bind failed"
+    done
+
     _done_ns=
     _ok=0
     _skipped=0
@@ -92,11 +109,11 @@ inject_late() {
         # mounts.
         case " $_done_ns " in *" $_ns "*) continue ;; esac
 
-        # Cannot see the staged cert in /system => scrubbed by a hiding layer
-        # (Shamiko, DenyList, KSU umount). Re-mounting would undo hiding that
-        # was asked for, so leave it and report it.
+        # A namespace that cannot see our staged cert in /system has had the
+        # module's mounts reverted, which only happens when the user runs
+        # root-hiding. Re-mounting there would undo what they asked for.
         if [ -n "$_probe" ] && ! ns_sees "$_p" "$SYS_STORE/$_probe"; then
-            logd "skipping hidden namespace $_ns (pid $_p)"
+            logd "skipping reverted namespace $_ns (pid $_p)"
             _skipped=$((_skipped + 1))
             _done_ns="$_done_ns $_ns"
             continue
@@ -113,15 +130,9 @@ inject_late() {
         fi
         _done_ns="$_done_ns $_ns"
     done
-    log "  injected into $_ok namespace(s), skipped $_skipped hidden"
+    log "  injected into $_ok namespace(s), skipped $_skipped reverted"
     release_stage
     verify_late "$_target" "$_zygotes"
-}
-
-# The binds keep the tmpfs alive. Dropping the staging path removes a mount
-# entry every process on the device would otherwise inherit.
-release_stage() {
-    umount "$STAGE" 2>/dev/null && rmdir "$STAGE" 2>/dev/null
 }
 
 # Zygote's view is what every app forked afterwards inherits, so that is what
@@ -150,50 +161,8 @@ verify_late() {
     [ "$_total" -gt 0 ] && [ "$_seen" = "$_total" ]
 }
 
-diagnose() {
-    # Appended to every status line, whatever hiding layer is in play.
-    _conf=""
-    [ "$(conflict_count)" -gt 0 ] &&
-        _conf=" $(conflict_count) name conflict(s), press Action."
-
-    set -- $(hide_report)
-    _mode=$1
-    _n=${2:-0}
-    case $_mode in
-    shamiko-whitelist)
-        log "Hiding: Shamiko in WHITELIST mode."
-        log "  Certificates will be stripped in nearly every app - only apps"
-        log "  previously granted root are exempt. Remove"
-        log "  /data/adb/shamiko/whitelist to return to blacklist mode."
-        describe "Active - but Shamiko whitelist mode strips certs in nearly all apps.$_conf"
-        ;;
-    shamiko-blacklist)
-        log "Hiding: Shamiko in blacklist mode, $_n package(s) listed."
-        log "  These apps will NOT see the certificates:"
-        hidden_packages | while IFS= read -r _p; do log "    $_p"; done
-        log "  Untick only the apps you are actually intercepting. Leave"
-        log "  gms/vending listed if you rely on Play Integrity."
-        describe "Active - $(staged_count) cert(s); $_n app(s) hidden.$_conf"
-        ;;
-    denylist-enforced)
-        log "Hiding: Magisk DenyList enforcement is ON, $_n package(s) listed."
-        log "  These apps will NOT see the certificates:"
-        hidden_packages | while IFS= read -r _p; do log "    $_p"; done
-        describe "Active - $(staged_count) cert(s); $_n app(s) hidden.$_conf"
-        ;;
-    none)
-        log "Hiding: none detected - certificates apply to all apps."
-        describe "Active - $(staged_count) cert(s) trusted system-wide.$_conf"
-        ;;
-    *)
-        log "Hiding: unknown (no magisk CLI; cannot read a denylist)."
-        describe "Active - $(staged_count) cert(s) trusted.$_conf"
-        ;;
-    esac
-}
-
 main() {
-    log "TrustMeDarling - service"
+    log "TrustMeDarling! - service"
 
     # late_start is non-blocking, so the boot may still be in progress.
     _w=0
@@ -207,22 +176,32 @@ main() {
         exit 0
     fi
 
+    _conf=""
+    [ "$(conflict_count)" -gt 0 ] &&
+        _conf=" $(conflict_count) renamed on collision."
+
     if needs_late_inject; then
         _target=$(active_store)
         [ "$force_late" = 1 ] && [ "$SDK" -lt 34 ] && _target=$SYS_STORE
         log "Late injection into $_target"
-        inject_late "$_target" || log "  late injection incomplete - see above"
+        if inject_late "$_target"; then
+            describe "Active - $(staged_count) cert(s) in the conscrypt APEX store.$_conf"
+        else
+            log "  late injection incomplete - see above"
+            describe "FAILED - certificates are not trusted. See the log."
+        fi
     else
         # Nothing to mount: the module tree is already part of /system.
         if [ -e "$SYS_STORE/$(staged_marker)" ]; then
             log "Module mount active: $(staged_count) cert(s) in $SYS_STORE"
+            describe "Active - $(staged_count) cert(s) in the system store.$_conf"
         else
             log "WARNING: staged certs are not visible in $SYS_STORE"
             log "  the root manager may not have mounted the module tree"
+            describe "FAILED - certificates are not trusted. See the log."
         fi
     fi
 
-    diagnose
     log "Done."
 }
 

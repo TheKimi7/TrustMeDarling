@@ -1,6 +1,7 @@
 #!/system/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 TheKimi7
+#
 # Shared library. Sourced by the entry-point scripts.
 
 MODID=TrustMeDarling
@@ -8,7 +9,6 @@ MODDIR=${MODDIR:-/data/adb/modules/$MODID}
 DATADIR=/data/adb/$MODID
 LOGFILE=$DATADIR/log.txt
 CONFIG=$DATADIR/config
-STATEFILE=$DATADIR/state
 
 SYS_STORE=/system/etc/security/cacerts
 APEX_STORE=/apex/com.android.conscrypt/cacerts
@@ -40,11 +40,6 @@ log() {
 }
 
 logd() { [ "$debug" = 1 ] && log "  [debug] $*"; }
-
-state_set() {
-    mkdir -p "$DATADIR" 2>/dev/null
-    printf '%s\n' "$*" >"$STATEFILE" 2>/dev/null
-}
 
 # One-line status under the module name in the manager's list.
 describe() {
@@ -93,9 +88,10 @@ manager() {
 
 # --- trust stores ---
 
-# Same gate conscrypt uses: the apex store needs the directory *and* API 34+.
-# An older device with an updated conscrypt module has the directory but still
-# reads /system.
+# Android 11-13 read /system/etc/security/cacerts. Android 14 moved the store
+# into the conscrypt APEX, and conscrypt gates on API level, not on the
+# directory existing - a 13 device that received a newer conscrypt module has
+# the directory but still reads /system. Both conditions, therefore.
 active_store() {
     if [ -d "$APEX_STORE" ] && [ "$SDK" -ge 34 ]; then
         printf '%s' "$APEX_STORE"
@@ -127,8 +123,8 @@ list_user_certs() {
     done
 }
 
-# Disabling a system CA records its alias under cacerts-removed, and the
-# platform then suppresses that slot by name whatever the file contains.
+# Disabling a CA records its alias under cacerts-removed, and the platform then
+# suppresses that slot by name whatever the file contains.
 is_removed_alias() {
     for _ra in /data/misc/user/*/cacerts-removed/"$1"; do
         [ -e "$_ra" ] && return 0
@@ -137,8 +133,8 @@ is_removed_alias() {
 }
 
 # Copy user certs into <dst>, renumbering around names already taken in <base>.
-# Only user certs are renamed; a disabled system CA is matched by filename, so
-# renaming a system cert would silently re-enable it.
+# Only user certs are renamed; a disabled CA is matched by filename, so renaming
+# a system cert would silently re-enable it.
 stage_user_certs() {
     _dst=$1
     _base=$2
@@ -171,7 +167,6 @@ stage_user_certs() {
         if cp -f "$_src" "$_dst/$_hash.$_i" 2>/dev/null; then
             if [ "$_hash.$_i" != "$_name" ]; then
                 log "  renumbered $_name -> $_hash.$_i (subject hash collision)"
-                log "    $_name is already taken in $_base"
                 printf '%s %s %s\n' "$_name" "$_hash.$_i" "$_base" \
                     >>"$DATADIR/.conflicts"
             fi
@@ -193,11 +188,11 @@ stage_user_certs() {
 }
 
 staged_names() { cat "$DATADIR/.staged" 2>/dev/null; }
+staged_count() { staged_names | grep -c '[0-9a-f]'; }
 conflicts() { cat "$DATADIR/.conflicts" 2>/dev/null; }
 conflict_count() { conflicts | grep -c '[0-9a-f]'; }
-staged_count() { staged_names | grep -c '[0-9a-f]'; }
 
-# Probe: a namespace that cannot see this has had our mounts stripped.
+# Any staged name serves as a probe for "can this namespace see our certs".
 staged_marker() { staged_names | head -1; }
 
 # Recorded separately because staging against the apex store can pick different
@@ -244,8 +239,8 @@ proc_table() {
 }
 
 # USAP pool members keep the zygote's name until they specialise, so pidof
-# alone also returns processes about to become apps. A real zygote's parent is
-# init.
+# alone also returns processes about to become apps. A real zygote is a direct
+# child of init.
 zygote_pids() {
     for _n in zygote zygote64; do
         for _p in $(pidof "$_n" 2>/dev/null); do
@@ -292,37 +287,4 @@ ns_sees() {
 has_mount_at() {
     [ -r "/proc/$1/mountinfo" ] || return 1
     awk -v t="$2" '$5 == t { found = 1 } END { exit !found }' "/proc/$1/mountinfo"
-}
-
-# --- hiding layers ---
-
-# Shamiko reads Magisk's DenyList but needs enforcement switched off, so a
-# populated list with enforcement 0 is its normal configuration. An empty
-# /data/adb/shamiko/whitelist inverts it to hide from all but the list.
-hide_report() {
-    command -v magisk >/dev/null 2>&1 || { printf 'unknown'; return 0; }
-    _enforce=$(magisk --sqlite "select value from settings where key='denylist'" 2>/dev/null)
-    _enforce=${_enforce#value=}
-    _list=$(magisk --denylist ls 2>/dev/null | cut -d'|' -f1 | sort -u | grep -v '^isolated$')
-    _count=$(printf '%s\n' "$_list" | grep -c '[a-z]')
-    _shamiko=0
-    [ -d /data/adb/modules/zygisk_shamiko ] &&
-        [ ! -f /data/adb/modules/zygisk_shamiko/disable ] && _shamiko=1
-    _whitelist=0
-    [ -f /data/adb/shamiko/whitelist ] && _whitelist=1
-
-    if [ "$_shamiko" = 1 ] && [ "$_whitelist" = 1 ]; then
-        printf 'shamiko-whitelist %s' "$_count"
-    elif [ "$_shamiko" = 1 ]; then
-        printf 'shamiko-blacklist %s' "$_count"
-    elif [ "$_enforce" = 1 ]; then
-        printf 'denylist-enforced %s' "$_count"
-    else
-        printf 'none %s' "$_count"
-    fi
-}
-
-hidden_packages() {
-    command -v magisk >/dev/null 2>&1 || return 0
-    magisk --denylist ls 2>/dev/null | cut -d'|' -f1 | sort -u | grep -v '^isolated$'
 }

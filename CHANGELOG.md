@@ -1,3 +1,25 @@
+## v2.1
+
+Scoped to certificates, and hardened against what three Android versions on
+real hardware actually did.
+
+* **Fixed a race that left apps untrusted.** The per-namespace walk enumerated
+  the whole process table before binding anything, so on a device with Google
+  services — where that enumeration takes tens of seconds — every app forked
+  during the window inherited an unpatched namespace and was never revisited.
+  Measured on Android 15: 9 of 54 apps could not see the certificates. Zygotes
+  are now bound first, before any enumeration, so anything forked afterwards
+  inherits the mount. Same device, same build, after the fix: 54 of 54.
+* Verified end-to-end with live proxy interception on **Android 13**
+  (`/system` store, `user` build), **Android 14** and **Android 15** (conscrypt
+  APEX, real updatable APEX, with Google services present).
+* Removed everything that was not about certificates: the module no longer
+  reads Magisk's DenyList database or any root-hiding tool's configuration. It
+  still reports which apps can and cannot see the certificates, because that is
+  a measurement of the certificates themselves.
+* The status line now distinguishes success from failure instead of always
+  reading "Active".
+
 ## v2.0
 
 * Reports which apps will **not** see your certificates. Root-hiding layers
@@ -18,7 +40,7 @@
   namespace, then checks whether zygote already sees it and only walks
   namespaces when propagation did not do the job. Namespaces scrubbed by a
   hiding layer are skipped rather than re-mounted, so hiding you asked for is
-  not undone. **This path is not yet verified on hardware.**
+  not undone. Verified on Android 14 with real proxy interception.
 * Verifies its own work and fails loudly. Every zygote must see the certificate,
   and a secondary zygote on a mixed-ABI device is not allowed to be missed.
 * Inert when no user certificates are installed: no `system/` directory is

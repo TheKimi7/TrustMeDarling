@@ -1,7 +1,7 @@
 id=TrustMeDarling
-name=Trust Me Darling!
-version=v2.0
-versionCode=2000
+name=TrustMeDarling!
+version=v2.1
+versionCode=2100
 author=TheKimi7
-description=Makes user-installed CA certificates part of the system trust store, and tells you which apps will not see them.
+description=Makes user-installed CA certificates part of the system trust store on Android 11 and newer.
 updateJson=https://raw.githubusercontent.com/TheKimi7/TrustMeDarling/main/update.json
